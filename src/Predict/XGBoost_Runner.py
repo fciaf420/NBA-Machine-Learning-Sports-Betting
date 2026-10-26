@@ -8,6 +8,7 @@ import xgboost as xgb
 from colorama import Fore, Style, init, deinit
 from src.Utils import Expected_Value
 from src.Utils import Kelly_Criterion as kc
+from src.Utils.gpu import xgb_device
 
 
 init()
@@ -51,11 +52,13 @@ def _load_models():
         ml_path = _select_model_path("ML")
         xgb_ml = xgb.Booster()
         xgb_ml.load_model(str(ml_path))
+        xgb_ml.set_param({'device': xgb_device()})
         xgb_ml_calibrator = _load_calibrator(ml_path)
     if xgb_uo is None:
         uo_path = _select_model_path("UO")
         xgb_uo = xgb.Booster()
         xgb_uo.load_model(str(uo_path))
+        xgb_uo.set_param({'device': xgb_device()})
         xgb_uo_calibrator = _load_calibrator(uo_path)
 
 
@@ -179,5 +182,6 @@ def xgb_runner(data, todays_games_uo, frame_ml, games, home_team_odds, away_team
             away_team_odds,
             kelly_criterion,
         )
+        return ml_predictions_array
     finally:
         deinit()

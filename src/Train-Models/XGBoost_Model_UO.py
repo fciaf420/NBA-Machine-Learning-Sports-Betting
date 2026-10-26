@@ -6,6 +6,23 @@ import joblib
 import numpy as np
 import pandas as pd
 import xgboost as xgb
+import shutil as _shutil
+import subprocess as _subprocess
+
+
+def _xgb_device():
+    """Use the GPU (CUDA) when one is available, e.g. a Colab T4."""
+    if not _shutil.which("nvidia-smi"):
+        return "cpu"
+    try:
+        ok = _subprocess.run(["nvidia-smi", "-L"], capture_output=True, timeout=10).returncode == 0
+    except Exception:
+        ok = False
+    return "cuda" if ok else "cpu"
+
+
+XGB_DEVICE = _xgb_device()
+print(f"XGBoost device: {XGB_DEVICE}")
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score, log_loss
 from sklearn.model_selection import TimeSeriesSplit
@@ -93,6 +110,7 @@ def sample_params(rng, seed):
         "eval_metric": ["mlogloss", "merror"],
         "seed": seed,
         "tree_method": "hist",
+        "device": XGB_DEVICE,
     }
     num_boost_round = int(rng.integers(300, 2501))
     return params, num_boost_round
