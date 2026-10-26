@@ -5,6 +5,7 @@ import sys
 
 # Support direct execution from src/Train-Models as documented.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.Utils.xgb_calibration import fit_calibrator
 from src.Utils.features import XGB_ML_FEATURES, select_features
 
 import joblib
@@ -129,17 +130,6 @@ def format_param(value, precision=3):
     return formatted.replace(".", "p")
 
 
-class BoosterWrapper:
-    def __init__(self, booster, num_class):
-        self.booster = booster
-        self.classes_ = np.arange(num_class)
-
-    def fit(self, X, y):
-        return self
-
-    def predict_proba(self, X):
-        return self.booster.predict(xgb.DMatrix(X))
-
 
 def walk_forward_cv_loss(X, y, params, num_boost_round, n_splits):
     tscv = TimeSeriesSplit(n_splits=n_splits)
@@ -214,12 +204,7 @@ def main():
     if args.calibration == "none":
         probabilities = best_model.predict(xgb.DMatrix(X_test))
     else:
-        calibrator = CalibratedClassifierCV(
-            BoosterWrapper(best_model, NUM_CLASSES),
-            method=args.calibration,
-            cv="prefit",
-        )
-        calibrator.fit(X_calib, y_calib)
+        calibrator = fit_calibrator(best_model, NUM_CLASSES, X_calib, y_calib, args.calibration)
         probabilities = calibrator.predict_proba(X_test)
 
     y_pred = np.argmax(probabilities, axis=1)

@@ -42,8 +42,10 @@ def _load_calibrator(model_path):
     if not calibration_path.exists():
         return None
     try:
+        import src.Utils.xgb_calibration  # noqa: F401  (makes BoosterWrapper importable for unpickling)
         return joblib.load(calibration_path)
-    except Exception:
+    except Exception as exc:
+        print(f"WARNING: could not load calibrator {calibration_path.name} ({type(exc).__name__}: {exc}); using raw model probabilities")
         return None
 
 
