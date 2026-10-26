@@ -112,3 +112,39 @@ python -m Get_Odds_Data --backfill --season 2025-26
 
 ## Contributing
 Contributions are welcome. If you change model behavior or data pipelines, add a note in the README and update any related scripts or docs.
+
+### Optional prior-season blending
+
+`config.toml` defaults to `blend_k = 0` (unchanged features) and `blend_r = 0.75`.
+With strength `k`, stats use `GP/(GP+k)` current season and `k/(GP+k)` previous
+season, regressed toward that prior league mean by `r`. IDs, names, GP, W and L
+stay raw; W_PCT and numeric rank signals are blended. Feature names/order stay
+unchanged. Prior snapshots are bounded to the configured **previous** season;
+TeamData uses regular-season stats even for playoff-date snapshots. Missing prior
+history warns and leaves that season unblended; missing individual teams use the
+prior league mean. Current-season snapshots remain strictly before game day.
+
+```bash
+cd src/Train-Models
+python -m Evaluate_Blend                     # optional --k 0 10 20 --r 0.75 1
+# Data/blend_eval.csv: walk-forward 2021-22..2025-26, all + GP buckets,
+# per-season + pooled scores; model and no-vig market use identical covered games.
+cd ../Process-Data
+PYTHONPATH=../.. python -m Create_Games --blend-k 10 --blend-r 0.75
+cd ../Train-Models
+python -m XGBoost_Model_ML --dataset dataset_2012-27_k10
+python -m XGBoost_Model_UO --dataset dataset_2012-27_k10
+python -m NN_Model_ML --dataset dataset_2012-27_k10
+python -m NN_Model_UO --dataset dataset_2012-27_k10
+```
+
+Evaluation builds raw games once, sweeps shared blend math, selects boosting rounds
+using the last 15% of prior **whole seasons**, then refits on all prior seasons.
+It targets a Colab T4 run under roughly 20 minutes (runtime not yet benchmarked).
+No trained models are saved by evaluation. GP buckets refer to pre-game snapshot GP.
+After selecting settings, set **both** `blend_k` and `blend_r` in config before live
+inference, matching the active trained models (`main.py -blend-k 10` overrides k).
+Inference fetches the prior season's final regular stats, falling back to local
+TeamData. Dataset table names encode k, **not r**: different r at the same k replaces
+the table. Do not mix settings or compare already-selected hyperparameters as an
+unbiased out-of-sample performance claim.

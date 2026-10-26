@@ -110,7 +110,7 @@ class TestCreateGames(unittest.TestCase):
                 create_games.TEAM_INDEX_BY_SEASON = {"2023-24": {"Team A": 0, "Team B": 1}}
 
                 create_games.toml.dump(config, create_games.CONFIG_PATH.open("w"))
-                create_games.main()
+                create_games.main([])
 
                 with sqlite3.connect(out_path) as con:
                     df = pd.read_sql_query('SELECT * FROM "dataset_test"', con)

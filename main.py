@@ -3,6 +3,9 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import requests
+import sqlite3
+import toml
+import warnings
 
 import pandas as pd
 import tensorflow as tf
@@ -15,12 +18,14 @@ from src.DataProviders.PredictionMarketProvider import (
     today_et,
 )
 from src.Predict import NN_Runner, XGBoost_Runner
-from src.Utils.snapshots import days_rest
+from src.Utils.snapshots import days_rest, snapshot_dates
+from src.Utils.blend import blend_team_stats, previous_season, load_local_prior, validate_settings
 from src.Utils.features import XGB_ML_FEATURES, select_features
 from src.Utils.Dictionaries import team_index_current
 from src.Utils.tools import (
     create_todays_games_from_odds,
     get_json_data,
+    data_headers,
     to_data_frame,
     get_todays_games_json,
     create_todays_games,
@@ -166,7 +171,32 @@ def print_devices():
     print(f"TensorFlow GPUs: {[g.name for g in gpus] or 'none (CPU)'} | XGBoost device: {xgb_device()}")
 
 
+def apply_inference_blend(df, game_date, k, r, config):
+    validate_settings(k, r)
+    if not k:
+        return df
+    season = season_string(game_date)
+    prior = None
+    try:
+        response = requests.get(DATA_URL_TEMPLATE.format(
+            season=previous_season(season), date_to=""), headers=data_headers, timeout=30)
+        response.raise_for_status()
+        prior = to_data_frame(response.json().get("resultSets"))
+        if len(prior) != 30 or "TEAM_ID" not in prior:
+            raise ValueError("Incomplete prior-season response")
+    except Exception as exc:
+        warnings.warn(f"NBA prior-season fetch failed ({exc}); trying local TeamData")
+        with sqlite3.connect(Path(__file__).resolve().parent / "Data" / "TeamData.sqlite") as con:
+            prior = load_local_prior(con, snapshot_dates(con), season, config)
+    return blend_team_stats(df, prior, k, r)
+
+
 def main(args):
+    config = toml.load(Path(__file__).resolve().parent / "config.toml")
+    k = args.blend_k if args.blend_k is not None else config.get("blend_k", 0)
+    r = config.get("blend_r", 0.75)
+    validate_settings(k, r)
+    print(f"Blend k={k:g}, r={r:g} (must match active trained models)")
     print_devices()
     game_date = date.fromisoformat(args.date) if args.date else today_et()
     if args.markets and not args.odds:
@@ -198,6 +228,7 @@ def main(args):
     if df.empty:
         print(Fore.RED + "Could not load team stats from stats.nba.com (blocked or timed out)." + Style.RESET_ALL)
         return
+    df = apply_inference_blend(df, game_date, k, r, config)
     schedule_df = load_schedule(game_date)
     data, todays_games_uo, frame_ml, home_team_odds, away_team_odds = create_todays_games_data(
         games, df, odds, schedule_df, game_date
@@ -234,5 +265,6 @@ if __name__ == "__main__":
     parser.add_argument('-markets', action='store_true', help='Compare model win % against Kalshi and Polymarket US prices')
     parser.add_argument('-date', help='Game date YYYY-MM-DD in US Eastern time (prediction markets only; default today)')
     parser.add_argument('-kc', action='store_true', help='Calculates percentage of bankroll to bet based on model edge')
+    parser.add_argument("-blend-k", type=float, default=None, help="Prior-season strength; must match trained model")
     args = parser.parse_args()
     main(args)
