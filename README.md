@@ -144,7 +144,21 @@ It targets a Colab T4 run under roughly 20 minutes (runtime not yet benchmarked)
 No trained models are saved by evaluation. GP buckets refer to pre-game snapshot GP.
 After selecting settings, set **both** `blend_k` and `blend_r` in config before live
 inference, matching the active trained models (`main.py -blend-k 10` overrides k).
-Inference fetches the prior season's final regular stats, falling back to local
-TeamData. Dataset table names encode k, **not r**: different r at the same k replaces
+Local TeamData is the canonical prior for both training and inference.
+Both require 30 unique teams and GP >= 58 for every team. Incomplete priors warn
+and disable blending for that season; inference then selects a k=0 model.
+Only when no local prior exists may inference fetch final regular-season stats
+from the API, validate them, persist them locally, then reread the same snapshot. Dataset table names encode k, **not r**: different r at the same k replaces
 the table. Do not mix settings or compare already-selected hyperparameters as an
 unbiased out-of-sample performance claim.
+
+
+Models now carry `<model>.meta.json` provenance: dataset, k/r, feature schema and
+order/count, prior snapshot dates, effective per-season k and creation time.
+Dataset provenance is persisted in `dataset.sqlite` by Create_Games, not guessed
+from the current config during training. Rebuild older blended tables before
+training; blended tables without provenance are rejected. Runners select the
+newest compatible model, never the highest historical accuracy. Missing metadata
+is accepted only for legacy k=0 models; invalid metadata is rejected. If a model
+includes the serving season in its prior-date history, that date must match too.
+No compatible model means a clear error, not silently using mismatched weights.

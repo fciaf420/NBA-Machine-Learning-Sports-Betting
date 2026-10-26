@@ -9,6 +9,7 @@ from colorama import Fore, Style, init, deinit
 from src.Utils import Expected_Value
 from src.Utils import Kelly_Criterion as kc
 from src.Utils.gpu import xgb_device
+from src.Utils.model_metadata import select_matching_model
 from src.Utils.features import XGB_ML_FEATURES, XGB_UO_FEATURES, select_features
 
 
@@ -24,17 +25,10 @@ xgb_ml_calibrator = None
 xgb_uo_calibrator = None
 
 
-def _select_model_path(kind):
-    candidates = list(MODEL_DIR.glob(f"*{kind}*.json"))
-    if not candidates:
-        raise FileNotFoundError(f"No XGBoost {kind} model found in {MODEL_DIR}")
-
-    def score(path):
-        match = ACCURACY_PATTERN.search(path.name)
-        accuracy = float(match.group(1)) if match else 0.0
-        return (path.stat().st_mtime, accuracy)
-
-    return max(candidates, key=score)
+def _select_model_path(kind, blend_k=0, blend_r=0.75, blend_season=None, prior_date=None):
+    columns = XGB_ML_FEATURES if kind == "ML" else XGB_UO_FEATURES
+    return select_matching_model(MODEL_DIR.glob(f"*{kind}*.json"), blend_k, blend_r,
+                                 f"XGB_{kind}_FEATURES", columns, blend_season, prior_date)
 
 
 def _load_calibrator(model_path):
@@ -49,20 +43,23 @@ def _load_calibrator(model_path):
         return None
 
 
-def _load_models():
-    global xgb_ml, xgb_uo, xgb_ml_calibrator, xgb_uo_calibrator
-    if xgb_ml is None:
-        ml_path = _select_model_path("ML")
-        xgb_ml = xgb.Booster()
-        xgb_ml.load_model(str(ml_path))
-        xgb_ml.set_param({'device': xgb_device()})
-        xgb_ml_calibrator = _load_calibrator(ml_path)
-    if xgb_uo is None:
-        uo_path = _select_model_path("UO")
-        xgb_uo = xgb.Booster()
-        xgb_uo.load_model(str(uo_path))
-        xgb_uo.set_param({'device': xgb_device()})
-        xgb_uo_calibrator = _load_calibrator(uo_path)
+_model_key = None
+
+
+def _load_models(blend_k=0, blend_r=0.75, blend_season=None, prior_date=None):
+    global xgb_ml, xgb_uo, xgb_ml_calibrator, xgb_uo_calibrator, _model_key
+    ml_path = _select_model_path("ML", blend_k, blend_r, blend_season, prior_date)
+    uo_path = _select_model_path("UO", blend_k, blend_r, blend_season, prior_date)
+    key = (str(ml_path), str(uo_path), blend_k, blend_r)
+    if _model_key != key:
+        ml, uo = xgb.Booster(), xgb.Booster()
+        ml.load_model(str(ml_path))
+        uo.load_model(str(uo_path))
+        ml.set_param({'device': xgb_device()})
+        uo.set_param({'device': xgb_device()})
+        xgb_ml, xgb_uo = ml, uo
+        xgb_ml_calibrator, xgb_uo_calibrator = _load_calibrator(ml_path), _load_calibrator(uo_path)
+        _model_key = key
 
 
 def _predict_probs(model, data, calibrator=None):
@@ -145,8 +142,8 @@ def _print_expected_value(
         )
 
 
-def xgb_runner(data, todays_games_uo, frame_ml, games, home_team_odds, away_team_odds, kelly_criterion):
-    _load_models()
+def xgb_runner(data, todays_games_uo, frame_ml, games, home_team_odds, away_team_odds, kelly_criterion, blend_k=0, blend_r=0.75, blend_season=None, prior_date=None):
+    _load_models(blend_k, blend_r, blend_season, prior_date)
 
     frame_uo = frame_ml.copy()
     frame_uo["OU"] = np.asarray(todays_games_uo, dtype=float)

@@ -8,6 +8,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.Utils.features import NN_ML_FEATURES, select_features
 
+from src.Utils.model_metadata import dataset_metadata, unique_model_path, write_model_metadata
+
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -106,6 +108,7 @@ def main():
     tf.config.optimizer.set_experimental_options({"remapping": False})
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
+    provenance = dataset_metadata(DATASET_DB, args.dataset)
     df = load_dataset(args.dataset)
     if df.empty:
         print(f"No rows found for dataset {args.dataset}.")
@@ -178,7 +181,8 @@ def main():
         f"_lr{format_param(params['lr'])}"
         f"_bs{params['batch_size']}.keras"
     )
-    model_path = MODEL_DIR / model_name
+    model_path = unique_model_path(MODEL_DIR / model_name)
+    write_model_metadata(model_path, provenance, args.dataset, "NN_ML_FEATURES", NN_ML_FEATURES)
     best_model.save(model_path)
     temp_path.unlink(missing_ok=True)
     print(f"Saved model: {model_path}")

@@ -9,6 +9,8 @@ from src.Utils.xgb_calibration import fit_calibrator
 from src.Utils.features import XGB_ML_FEATURES, select_features
 
 import joblib
+from src.Utils.model_metadata import dataset_metadata, unique_model_path, write_model_metadata
+
 import numpy as np
 import pandas as pd
 import xgboost as xgb
@@ -158,6 +160,7 @@ def main():
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
+    provenance = dataset_metadata(DATASET_DB, args.dataset)
     df = load_dataset(args.dataset)
     if df.empty:
         print(f"No rows found for dataset {args.dataset}.")
@@ -232,7 +235,8 @@ def main():
         f"_a{format_param(params['alpha'])}"
         f"_nb{best['num_boost_round']}.json"
     )
-    model_path = MODEL_DIR / model_name
+    model_path = unique_model_path(MODEL_DIR / model_name)
+    write_model_metadata(model_path, provenance, args.dataset, "XGB_ML_FEATURES", XGB_ML_FEATURES)
     best_model.save_model(str(model_path))
     print(f"Saved model: {model_path}")
 

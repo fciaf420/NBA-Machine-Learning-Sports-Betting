@@ -38,14 +38,58 @@ def prior_snapshot_date(dates, season, config):
     return max(eligible, default=None)
 
 
-def load_local_prior(connection, dates, season, config):
-    """Caller caches this once per season. Missing history leaves stats raw."""
+PRIOR_POLICY = "local-teamdata-30teams-min58gp-v1"
+
+
+def prior_is_complete(records):
+    """58+ games covers shortened 2011/2020 seasons without accepting early data."""
+    return (len(records) == 30
+            and len({_team_id(row.get("TEAM_ID")) for row in records}) == 30
+            and all(_number(row.get("TEAM_ID")) is not None
+                    and (gp := _number(row.get("GP"))) is not None and gp >= 58
+                    for row in records))
+
+
+def load_local_prior(connection, dates, season, config, fill_missing=None):
+    """Canonical training/serving source. API may fill an ABSENT local season.
+
+    Existing incomplete history is never replaced by an API response. Both paths
+    disable blending with the same completeness check. API fills are persisted,
+    then reread through SQLite before use, so future dataset builds see the same
+    exact prior. Caller caches this once per season.
+    """
     selected = prior_snapshot_date(dates, season, config)
+    if selected is None and fill_missing is not None:
+        try:
+            fetched = fill_missing(previous_season(season))
+            records = fetched.to_dict("records")
+            if not prior_is_complete(records):
+                raise ValueError("need 30 unique teams with GP >= 58")
+            bounds = config["get-data"][previous_season(season)]
+            selected = datetime.strptime(bounds["end_date"], "%Y-%m-%d").date().isoformat()
+            # Reapply season bounds even for a synthetic final snapshot date.
+            if prior_snapshot_date([selected], season, config) != selected:
+                raise ValueError("prior season date is not before current season")
+            fetched.to_sql(selected, connection, if_exists="fail", index=False)
+            connection.commit()
+        except Exception as exc:
+            warnings.warn(f"WARNING: cannot fill canonical prior for {season}: {exc}; effective blend_k=0")
+            selected = None
     if selected is None:
-        warnings.warn(f"No prior-season TeamData for {season}; blending disabled for this season")
+        warnings.warn(f"WARNING: no complete prior-season TeamData for {season}; effective blend_k=0")
+        return None
+    cursor = connection.execute(f'SELECT * FROM "{selected}"')
+    columns = [col[0] for col in cursor.description]
+    records = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    if not prior_is_complete(records):
+        warnings.warn(f"WARNING: incomplete prior {selected} for {season}: need 30 unique teams "
+                      "with GP >= 58; effective blend_k=0")
         return None
     import pandas as pd
-    return pd.read_sql_query(f'SELECT * FROM "{selected}"', connection)
+    frame = pd.DataFrame.from_records(records)
+    frame.attrs["prior_date"] = selected
+    frame.attrs["prior_policy"] = PRIOR_POLICY
+    return frame
 
 
 def _number(value):

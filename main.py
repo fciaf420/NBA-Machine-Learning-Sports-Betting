@@ -153,13 +153,17 @@ def run_models(data, normalized_data, todays_games_uo, frame_ml, games, home_tea
     if args.xgb:
         print("---------------XGBoost Model Predictions---------------")
         probs["XGBoost"] = XGBoost_Runner.xgb_runner(
-            data, todays_games_uo, frame_ml, games, home_team_odds, away_team_odds, args.kc
+            data, todays_games_uo, frame_ml, games, home_team_odds, away_team_odds, args.kc,
+            blend_k=args.effective_blend_k, blend_r=args.effective_blend_r,
+            blend_season=args.blend_season, prior_date=args.prior_date
         )
         print("-------------------------------------------------------")
     if args.nn:
         print("------------Neural Network Model Predictions-----------")
         probs["Neural Net"] = NN_Runner.nn_runner(
-            normalized_data, todays_games_uo, frame_ml, games, home_team_odds, away_team_odds, args.kc
+            normalized_data, todays_games_uo, frame_ml, games, home_team_odds, away_team_odds, args.kc,
+            blend_k=args.effective_blend_k, blend_r=args.effective_blend_r,
+            blend_season=args.blend_season, prior_date=args.prior_date
         )
         print("-------------------------------------------------------")
     return probs
@@ -174,21 +178,21 @@ def print_devices():
 def apply_inference_blend(df, game_date, k, r, config):
     validate_settings(k, r)
     if not k:
-        return df
+        return df, 0, None
     season = season_string(game_date)
-    prior = None
-    try:
+
+    def fill_missing(prior_season):
         response = requests.get(DATA_URL_TEMPLATE.format(
-            season=previous_season(season), date_to=""), headers=data_headers, timeout=30)
+            season=prior_season, date_to=""), headers=data_headers, timeout=30)
         response.raise_for_status()
-        prior = to_data_frame(response.json().get("resultSets"))
-        if len(prior) != 30 or "TEAM_ID" not in prior:
-            raise ValueError("Incomplete prior-season response")
-    except Exception as exc:
-        warnings.warn(f"NBA prior-season fetch failed ({exc}); trying local TeamData")
-        with sqlite3.connect(Path(__file__).resolve().parent / "Data" / "TeamData.sqlite") as con:
-            prior = load_local_prior(con, snapshot_dates(con), season, config)
-    return blend_team_stats(df, prior, k, r)
+        return to_data_frame(response.json().get("resultSets"))
+
+    with sqlite3.connect(Path(__file__).resolve().parent / "Data" / "TeamData.sqlite") as con:
+        prior = load_local_prior(con, snapshot_dates(con), season, config, fill_missing=fill_missing)
+    effective_k = k if prior is not None else 0
+    prior_date = prior.attrs["prior_date"] if prior is not None else None
+    print(f"Effective blend k={effective_k:g}, r={r:g}, canonical prior={prior_date}")
+    return blend_team_stats(df, prior, effective_k, r), effective_k, prior_date
 
 
 def main(args):
@@ -228,7 +232,9 @@ def main(args):
     if df.empty:
         print(Fore.RED + "Could not load team stats from stats.nba.com (blocked or timed out)." + Style.RESET_ALL)
         return
-    df = apply_inference_blend(df, game_date, k, r, config)
+    df, args.effective_blend_k, args.prior_date = apply_inference_blend(df, game_date, k, r, config)
+    args.effective_blend_r = r
+    args.blend_season = season_string(game_date)
     schedule_df = load_schedule(game_date)
     data, todays_games_uo, frame_ml, home_team_odds, away_team_odds = create_todays_games_data(
         games, df, odds, schedule_df, game_date

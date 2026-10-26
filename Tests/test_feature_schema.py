@@ -71,7 +71,8 @@ class FeatureSchemaTests(unittest.TestCase):
         template = next(ast.literal_eval(n.value) for n in tree.body
                         if isinstance(n, ast.Assign)
                         and any(isinstance(t, ast.Name) and t.id == "DATA_URL_TEMPLATE" for t in n.targets))
-        format_call = next(n for n in ast.walk(tree) if isinstance(n, ast.Call)
+        main_node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        format_call = next(n for n in ast.walk(main_node) if isinstance(n, ast.Call)
                            and isinstance(n.func, ast.Attribute) and n.func.attr == "format"
                            and isinstance(n.func.value, ast.Name) and n.func.value.id == "DATA_URL_TEMPLATE")
         game_date = date(2026, 1, 7)
@@ -146,11 +147,13 @@ class FeatureSchemaTests(unittest.TestCase):
         tree = ast.parse((ROOT / "main.py").read_text())
         main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
         messages = []
-        env = {"date": date, "PREDICTION_MARKETS": {"kalshi", "polymarket"},
+        env = {"toml": SimpleNamespace(load=lambda p: {}), "Path": Path,
+               "__file__": str(ROOT / "main.py"), "validate_settings": lambda k, r: None,
+               "date": date, "PREDICTION_MARKETS": {"kalshi", "polymarket"},
                "today_et": lambda: date(2026, 10, 26),
                "print_devices": lambda: None, "print": lambda *args: messages.append(str(args[0]))}
         exec(compile(ast.Module(body=[main], type_ignores=[]), "main.py", "exec"), env)
-        env["main"](SimpleNamespace(date="2026-01-07", markets=False, odds=None))
+        env["main"](SimpleNamespace(blend_k=None, date="2026-01-07", markets=False, odds=None))
         self.assertTrue(any("requires -odds" in m for m in messages))
 
     def test_explicit_date_provider_results_and_sportsbook_rejection(self):
@@ -166,20 +169,22 @@ class FeatureSchemaTests(unittest.TestCase):
                         provider.return_value.get_odds.return_value = empty_result
                         resolver = Mock(side_effect=AssertionError("must stop before resolving games"))
                         messages = []
-                        env = {"date": date, "today_et": lambda: date(2026, 10, 26),
+                        env = {"toml": SimpleNamespace(load=lambda p: {}), "Path": Path,
+                               "__file__": str(ROOT / "main.py"), "validate_settings": lambda k, r: None,
+                               "date": date, "today_et": lambda: date(2026, 10, 26),
                                "PREDICTION_MARKETS": {"kalshi", "polymarket"},
                                "print_devices": lambda: None,
                                "PredictionMarketOddsProvider": provider, "resolve_games": resolver,
                                "print": lambda *args: messages.append(str(args[0]))}
                         exec(compile(ast.Module(body=[main], type_ignores=[]), "main.py", "exec"), env)
-                        env["main"](SimpleNamespace(date=requested_date, markets=False, odds=venue))
+                        env["main"](SimpleNamespace(blend_k=None, date=requested_date, markets=False, odds=venue))
                         provider.assert_called_once_with(venue=venue, date=date.fromisoformat(requested_date))
                         resolver.assert_not_called()
                         self.assertTrue(any("No date-specific odds returned" in m for m in messages))
         # A historical sportsbook source must be rejected before its undated provider is called.
         sportsbook = Mock(side_effect=AssertionError("must not request undated odds"))
         env["SbrOddsProvider"] = sportsbook
-        env["main"](SimpleNamespace(date="2026-01-07", markets=False, odds="fanduel"))
+        env["main"](SimpleNamespace(blend_k=None, date="2026-01-07", markets=False, odds="fanduel"))
         sportsbook.assert_not_called()
         self.assertTrue(any("sportsbook odds are current-only" in m for m in messages))
         # Valid dated results may proceed, but the resolver must still have fallback disabled.
@@ -187,7 +192,7 @@ class FeatureSchemaTests(unittest.TestCase):
         provider.return_value.get_odds.return_value = valid_odds
         resolver.side_effect = None
         resolver.return_value = (None, None)  # Stop before stats/model execution.
-        env["main"](SimpleNamespace(date="2026-01-07", markets=False, odds="polymarket"))
+        env["main"](SimpleNamespace(blend_k=None, date="2026-01-07", markets=False, odds="polymarket"))
         resolver.assert_called_once_with(valid_odds, "polymarket", allow_today_fallback=False)
 
     def test_resolver_never_fetches_today_when_fallback_disabled(self):

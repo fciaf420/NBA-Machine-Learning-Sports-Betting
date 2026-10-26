@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 from colorama import Fore, Style, init, deinit
 from src.Utils.keras_compat import keras, load_model
+from src.Utils.model_metadata import select_matching_model
 from src.Utils.features import NN_ML_FEATURES, NN_UO_FEATURES, select_features
 from src.Utils import Expected_Value
 from src.Utils import Kelly_Criterion as kc
@@ -35,19 +36,10 @@ def _list_model_candidates(prefix):
     return candidates
 
 
-def _select_best_model(prefix, pattern):
-    candidates = _list_model_candidates(prefix)
-    if not candidates:
-        raise FileNotFoundError(f"No model found for prefix {prefix} in {MODEL_DIR}")
-
-    def score(path):
-        match = pattern.search(path.name)
-        accuracy = float(match.group(1)) if match else 0.0
-        if not (0.0 <= accuracy <= 100.0):
-            accuracy = 0.0
-        return (accuracy, path.stat().st_mtime)
-
-    return max(candidates, key=score)
+def _select_best_model(prefix, pattern, blend_k=0, blend_r=0.75, blend_season=None, prior_date=None):
+    schema = "NN_ML_FEATURES" if "-ML-" in prefix else "NN_UO_FEATURES"
+    columns = NN_ML_FEATURES if "-ML-" in prefix else NN_UO_FEATURES
+    return select_matching_model(_list_model_candidates(prefix), blend_k, blend_r, schema, columns, blend_season, prior_date)
 
 
 def _load_legacy_keras(path):
@@ -86,18 +78,21 @@ def _load_any(path):
         return _load_legacy_keras(path)
 
 
-def _load_models():
-    global _model, _ou_model
-    if _model is None:
-        ml_path = _select_best_model("Trained-Model-ML-", ML_PATTERN)
-        _model = _load_any(ml_path)
-    if _ou_model is None:
-        ou_path = _select_best_model("Trained-Model-OU-", OU_PATTERN)
-        _ou_model = _load_any(ou_path)
+_model_key = None
 
 
-def nn_runner(data, todays_games_uo, frame_ml, games, home_team_odds, away_team_odds, kelly_criterion):
-    _load_models()
+def _load_models(blend_k=0, blend_r=0.75, blend_season=None, prior_date=None):
+    global _model, _ou_model, _model_key
+    ml_path = _select_best_model("Trained-Model-ML-", ML_PATTERN, blend_k, blend_r, blend_season, prior_date)
+    ou_path = _select_best_model("Trained-Model-OU-", OU_PATTERN, blend_k, blend_r, blend_season, prior_date)
+    key = (str(ml_path), str(ou_path), blend_k, blend_r)
+    if _model_key != key:
+        ml, ou = _load_any(ml_path), _load_any(ou_path)
+        _model, _ou_model, _model_key = ml, ou, key
+
+
+def nn_runner(data, todays_games_uo, frame_ml, games, home_team_odds, away_team_odds, kelly_criterion, blend_k=0, blend_r=0.75, blend_season=None, prior_date=None):
+    _load_models(blend_k, blend_r, blend_season, prior_date)
 
     ml_predictions_array = []
 

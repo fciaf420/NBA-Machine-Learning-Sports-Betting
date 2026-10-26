@@ -117,6 +117,7 @@ def build_dataset(config=None, blend_k=0, blend_r=0.75, include_metadata=False):
     config = config or toml.load(CONFIG_PATH)
     validate_settings(blend_k, blend_r)
     metadata = []
+    prior_dates = {}
 
     scores = []
     win_margin = []
@@ -137,7 +138,9 @@ def build_dataset(config=None, blend_k=0, blend_r=0.75, include_metadata=False):
 
         @lru_cache(maxsize=None)
         def season_prior(season_key):
-            return load_local_prior(teams_con, dates, season_key, config)
+            prior = load_local_prior(teams_con, dates, season_key, config)
+            prior_dates[season_key] = prior.attrs["prior_date"] if prior is not None else None
+            return prior
 
         @lru_cache(maxsize=32)
         def blended_table(snapshot_date, season_key):
@@ -220,6 +223,11 @@ def build_dataset(config=None, blend_k=0, blend_r=0.75, include_metadata=False):
     if include_metadata:
         for col in ("Season", "ML_Home", "ML_Away", "Home_TEAM_ID", "Away_TEAM_ID"):
             frame[col] = [row[col] for row in metadata]
+    from src.Utils.blend import PRIOR_POLICY
+    frame.attrs["blend_metadata"] = {"blend_k": blend_k, "blend_r": blend_r,
+                                      "prior_dates": prior_dates, "prior_policy": PRIOR_POLICY,
+                                      "effective_k_by_season": {season: blend_k if day else 0
+                                                                for season, day in prior_dates.items()}}
     return frame
 
 
@@ -256,6 +264,8 @@ def main(argv=None):
     if not frame.empty:
         with sqlite3.connect(OUTPUT_DB_PATH) as con:
             frame.to_sql(table, con, if_exists="replace", index=False)
+            from src.Utils.model_metadata import save_dataset_metadata
+            save_dataset_metadata(con, table, frame.attrs["blend_metadata"])
 
 
 if __name__ == "__main__":
