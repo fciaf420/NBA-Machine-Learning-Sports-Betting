@@ -3,12 +3,9 @@ import re
 from pathlib import Path
 
 import numpy as np
-import tensorflow as tf
 from colorama import Fore, Style, init, deinit
-try:  # models were saved with Keras 2; Colab ships Keras 3, so prefer the tf_keras shim
-    from tf_keras.models import load_model
-except ImportError:
-    from keras.models import load_model
+from src.Utils.keras_compat import keras, load_model
+from src.Utils.features import NN_ML_FEATURES, NN_UO_FEATURES, select_features
 from src.Utils import Expected_Value
 from src.Utils import Kelly_Criterion as kc
 
@@ -65,10 +62,7 @@ def _load_legacy_keras(path):
     import zipfile
 
     import h5py
-    try:
-        from tf_keras.models import model_from_json
-    except ImportError:
-        from keras.models import model_from_json
+    model_from_json = keras.models.model_from_json
 
     with zipfile.ZipFile(path) as z:
         config = z.read("config.json").decode()
@@ -107,14 +101,15 @@ def nn_runner(data, todays_games_uo, frame_ml, games, home_team_odds, away_team_
 
     ml_predictions_array = []
 
+    data = select_features(frame_ml, NN_ML_FEATURES).to_numpy(dtype=float)
+    data = keras.utils.normalize(data, axis=1)
     for row in data:
         ml_predictions_array.append(_model.predict(np.array([row])))
 
     frame_uo = copy.deepcopy(frame_ml)
     frame_uo['OU'] = np.asarray(todays_games_uo)
-    data = frame_uo.values
-    data = data.astype(float)
-    data = tf.keras.utils.normalize(data, axis=1)
+    data = select_features(frame_uo, NN_UO_FEATURES).to_numpy(dtype=float)
+    data = keras.utils.normalize(data, axis=1)
 
     ou_predictions_array = []
 
@@ -129,6 +124,14 @@ def nn_runner(data, todays_games_uo, frame_ml, games, home_team_odds, away_team_
         under_over = int(np.argmax(ou_predictions_array[count]))
         winner_confidence = ml_predictions_array[count]
         un_confidence = ou_predictions_array[count]
+        if under_over == 2:
+            confidence = round(float(ou_predictions_array[count][0][2]) * 100, 1)
+            winner_team = home_team if winner == 1 else away_team
+            win_confidence = round(float(winner_confidence[0][winner]) * 100, 1)
+            print(f"{winner_team} ({win_confidence}%) | {home_team} vs {away_team}: "
+                  f"PUSH {todays_games_uo[count]} ({confidence}%)")
+            count += 1
+            continue
         if winner == 1:
             winner_confidence = round(winner_confidence[0][1] * 100, 1)
             if under_over == 0:

@@ -15,6 +15,8 @@ from src.DataProviders.PredictionMarketProvider import (
     today_et,
 )
 from src.Predict import NN_Runner, XGBoost_Runner
+from src.Utils.snapshots import days_rest
+from src.Utils.features import XGB_ML_FEATURES, select_features
 from src.Utils.Dictionaries import team_index_current
 from src.Utils.tools import (
     create_todays_games_from_odds,
@@ -24,7 +26,7 @@ from src.Utils.tools import (
     create_todays_games,
 )
 
-DATA_URL_TEMPLATE = "https://stats.nba.com/stats/leaguedashteamstats?Conference=&DateFrom=&DateTo=&Division=&GameScope=&GameSegment=&Height=&ISTRound=&LastNGames=0&LeagueID=00&Location=&MeasureType=Base&Month=0&OpponentTeamID=0&Outcome=&PORound=0&PaceAdjust=N&PerMode=PerGame&Period=0&PlayerExperience=&PlayerPosition=&PlusMinus=N&Rank=N&Season={season}&SeasonSegment=&SeasonType=Regular%20Season&ShotClockRange=&StarterBench=&TeamID=0&TwoWay=0&VsConference=&VsDivision="
+DATA_URL_TEMPLATE = "https://stats.nba.com/stats/leaguedashteamstats?Conference=&DateFrom=&DateTo={date_to}&Division=&GameScope=&GameSegment=&Height=&ISTRound=&LastNGames=0&LeagueID=00&Location=&MeasureType=Base&Month=0&OpponentTeamID=0&Outcome=&PORound=0&PaceAdjust=N&PerMode=PerGame&Period=0&PlayerExperience=&PlayerPosition=&PlusMinus=N&Rank=N&Season={season}&SeasonSegment=&SeasonType=Regular%20Season&ShotClockRange=&StarterBench=&TeamID=0&TwoWay=0&VsConference=&VsDivision="
 PREDICTION_MARKETS = {"kalshi", "polymarket"}
 
 
@@ -56,7 +58,7 @@ def schedule_path(d):
     return path
 
 
-def create_todays_games_data(games, df, odds, schedule_df, today):
+def create_todays_games_data(games, df, odds, schedule_df, game_date):
     match_data = []
     todays_games_uo = []
     home_team_odds = []
@@ -84,33 +86,22 @@ def create_todays_games_data(games, df, odds, schedule_df, today):
         away_games = schedule_df[
             (schedule_df['Home Team'] == away_team) | (schedule_df['Away Team'] == away_team)
         ]
-        previous_home_games = home_games.loc[
-            home_games['Date'] <= today
-        ].sort_values('Date', ascending=False).head(1)['Date']
-        previous_away_games = away_games.loc[
-            away_games['Date'] <= today
-        ].sort_values('Date', ascending=False).head(1)['Date']
-        if len(previous_home_games) > 0:
-            last_home_date = previous_home_games.iloc[0]
-            home_days_off = timedelta(days=1) + today - last_home_date
-        else:
-            home_days_off = timedelta(days=7)
-        if len(previous_away_games) > 0:
-            last_away_date = previous_away_games.iloc[0]
-            away_days_off = timedelta(days=1) + today - last_away_date
-        else:
-            away_days_off = timedelta(days=7)
+        home_days_off = days_rest(home_games['Date'], game_date)
+        away_days_off = days_rest(away_games['Date'], game_date)
         home_team_series = df.iloc[team_index_current.get(home_team)]
         away_team_series = df.iloc[team_index_current.get(away_team)]
-        stats = pd.concat([home_team_series, away_team_series])
-        stats['Days-Rest-Home'] = home_days_off.days
-        stats['Days-Rest-Away'] = away_days_off.days
+        stats = pd.concat([
+            home_team_series,
+            away_team_series.rename(index={col: f"{col}.1" for col in df.columns}),
+        ])
+        stats['Days-Rest-Home'] = home_days_off
+        stats['Days-Rest-Away'] = away_days_off
         match_data.append(stats)
 
     games_data_frame = pd.concat(match_data, ignore_index=True, axis=1)
     games_data_frame = games_data_frame.T
 
-    frame_ml = games_data_frame.drop(columns=['TEAM_ID', 'TEAM_NAME'])
+    frame_ml = select_features(games_data_frame, XGB_ML_FEATURES)
     data = frame_ml.values
     data = data.astype(float)
 
@@ -121,7 +112,7 @@ def load_schedule(d):
     return pd.read_csv(schedule_path(d), parse_dates=['Date'], date_format='%d/%m/%Y %H:%M')
 
 
-def resolve_games(odds, sportsbook):
+def resolve_games(odds, sportsbook, allow_today_fallback=True):
     if odds:
         games = create_todays_games_from_odds(odds)
         if len(games) == 0:
@@ -145,6 +136,9 @@ def resolve_games(odds, sportsbook):
             )
         return games, odds
 
+    if not allow_today_fallback:
+        print("No date-specific odds games found; refusing to fall back to today's schedule for -date.")
+        return None, None
     games_json = get_todays_games_json(todays_games_url(datetime.today()))
     return create_todays_games(games_json), None
 
@@ -177,27 +171,36 @@ def main(args):
     game_date = date.fromisoformat(args.date) if args.date else today_et()
     if args.markets and not args.odds:
         args.odds = "kalshi"
+    if game_date != today_et() and args.odds not in PREDICTION_MARKETS:
+        print("A non-today -date requires -odds kalshi or -odds polymarket; "
+              "sportsbook odds are current-only, not date-specific.")
+        return
     odds = None
     if args.odds in PREDICTION_MARKETS:
         odds = PredictionMarketOddsProvider(venue=args.odds, date=game_date).get_odds()
-        missing = [k for k, v in odds.items() if v["under_over_odds"] is None]
+        missing = [k for k, v in (odds or {}).items() if v["under_over_odds"] is None]
         if missing:
             print(f"No Kalshi total for {len(missing)} game(s); O/U prediction will be blank for those.")
     elif args.odds:
         odds = SbrOddsProvider(sportsbook=args.odds).get_odds()
-    games, odds = resolve_games(odds, args.odds)
+    if args.date and not odds:
+        print(f"No date-specific odds returned for {game_date}; stopping without today's schedule.")
+        return
+    games, odds = resolve_games(odds, args.odds, allow_today_fallback=not bool(args.date))
     if games is None:
         return
 
-    today = datetime.today()
-    stats_json = get_json_data(DATA_URL_TEMPLATE.format(season=season_string(game_date)))
+    stats_json = get_json_data(DATA_URL_TEMPLATE.format(
+        season=season_string(game_date),
+        date_to=(game_date - timedelta(days=1)).strftime("%m%%2F%d%%2F%Y"),
+    ))
     df = to_data_frame(stats_json)
     if df.empty:
         print(Fore.RED + "Could not load team stats from stats.nba.com (blocked or timed out)." + Style.RESET_ALL)
         return
     schedule_df = load_schedule(game_date)
     data, todays_games_uo, frame_ml, home_team_odds, away_team_odds = create_todays_games_data(
-        games, df, odds, schedule_df, today
+        games, df, odds, schedule_df, game_date
     )
 
     if args.A:

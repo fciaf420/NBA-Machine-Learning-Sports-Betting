@@ -1,6 +1,11 @@
 import argparse
 import sqlite3
 from pathlib import Path
+import sys
+
+# Support direct execution from src/Train-Models as documented.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.Utils.features import XGB_UO_FEATURES, select_features
 
 import joblib
 import numpy as np
@@ -31,20 +36,9 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DATASET_DB = BASE_DIR / "Data" / "dataset.sqlite"
 MODEL_DIR = BASE_DIR / "Models" / "XGBoost_Models"
 
-DEFAULT_DATASET = "dataset_2012-26"
+DEFAULT_DATASET = "dataset_2012-27"
 TARGET_COLUMN = "OU-Cover"
 DATE_COLUMN = "Date"
-DROP_COLUMNS = [
-    "index",
-    "Score",
-    "Home-Team-Win",
-    "TEAM_NAME",
-    "Date",
-    "index.1",
-    "TEAM_NAME.1",
-    "Date.1",
-    "OU-Cover",
-]
 NUM_CLASSES = 3
 
 
@@ -59,7 +53,7 @@ def prepare_data(df):
         data[DATE_COLUMN] = pd.to_datetime(data[DATE_COLUMN], errors="coerce")
         data = data.sort_values(DATE_COLUMN)
     y = data[TARGET_COLUMN].astype(int).to_numpy()
-    X = data.drop(columns=DROP_COLUMNS, errors="ignore").astype(float).to_numpy()
+    X = select_features(data, XGB_UO_FEATURES).astype(float).to_numpy()
     return X, y
 
 
